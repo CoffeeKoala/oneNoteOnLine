@@ -1,3 +1,8 @@
 put this file on line
 
 try to upload this file on github 
+
+
+可不可以打中文？
+
+UFT-8 编码测试~
