@@ -120,8 +120,8 @@ def EntropyRefine(dataSet, targetColumn, conditionColumn, cntColumn):
 
 
 
-def run_sql(sql):
-    conn = connect(host='10.2.8.91', auth_mechanism='PLAIN', port=21050, user='user', password='psd')
+def run_sql(sql,user,pswd):
+    conn = connect(host='10.2.8.91', auth_mechanism='PLAIN', port=21050, user=user, password=pswd)
     cursor = conn.cursor()
 
 
