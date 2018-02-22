@@ -83,7 +83,7 @@ def EntropyRefine(dataSet, targetColumn, conditionColumn, cntColumn):
         cntList.append(cnt)
         enum_valueList.append(enum_value)
 
-        print "No.",cnt," value: ",enum_value,", \t\t entropy :", rawEnt_i, "\t\tcoeff:", w_i
+        # print "No.",cnt," value: ",enum_value,", \t\t entropy :", rawEnt_i, "\t\tcoeff:", w_i
 
     # print w_List,cntList,enum_valueList
     # s1 = pd.Series(enum_valueList,index = cntList)
@@ -91,29 +91,14 @@ def EntropyRefine(dataSet, targetColumn, conditionColumn, cntColumn):
     print "......................................"
     # m =[ w_List,cntList,enum_valueList]
 
-    df = pd.DataFrame({"w_List": w_List,"enum_valueList": enum_valueList})
+    df = pd.DataFrame({"No. ":cntList,"w_List": w_List,"enum_valueList": enum_valueList,"entropy":rawEntList,"w_List": w_List},index=enum_valueList)
 
     print df
-    # print np.array(m)
-    # print np.array(m).shape
 
-    # # m2= np.array(m).reshape(4,3)
-    # # print m2
-    # # print m2.shape
+    entropy =  np.dot(rawEntList,w_List)
+    print "......................................entropy of ",  conditionColumn, "under " , targetColumn ," is ", entropy, "\n\n"
 
-    # m3 = np.array(w_List).reshape(4,1)
-    # print m3
-    # m4 = np.asarray(cntList).reshape(4,1)
-    # print m4
-
-    # M = [m3,m4]
-    # m5= array(m3,m4)
-    # df = pd.DataFrame(M,index=enum_valueList,columns=['w_List','cntList','value'])
-    # print df
-    # entropy =  np.dot(rawEntList,w_List)
-    # print "......................................entropy of ",  conditionColumn, "under " , targetColumn ," is ", entropy, "\n\n"
-
-    # return entropy
+    return entropy
 
 
 
@@ -141,21 +126,22 @@ if __name__ == '__main__':
     rawDataSet = loadData('C:\Users\zhangminshu02\Downloads\querryResult\query-impala-486745.csv')
     # condition = [u'phone_os_treat', u'ppd_tenure_m_bin', u'age_bin', u'cmstr_pho_pro', u'reg_resorce', u'cnt_rec', u'cnt_uniq_user'],
 
-    # condition = rawDataSet.columns.difference(['cnt_uniq_user','salary_bin3','cnt_rec'])
-    c = 'phone_os_treat'
+    condition = rawDataSet.columns.difference(['cnt_uniq_user','salary_bin3','cnt_rec'])
+    # c = 'phone_os_treat'
 
-    EntropyRefine(rawDataSet, targetColumn = 'salary_bin3', conditionColumn=c ,cntColumn='cnt_uniq_user')
+    # EntropyRefine(rawDataSet, targetColumn = 'salary_bin3', conditionColumn=c ,cntColumn='cnt_uniq_user')
 
 
+    result = {}
+    for c in condition:
+        # print c
+        sql_grp = 'select salary_bin3 ,' + c +' , count(1) as cnt_rec , count(distinct userid) as cnt_uniq_user from appzc.zms_customer_income_vars_Master_1 group by salary_bin3, '+ c
+        print sql_grp
+        df = run_sql(sql_grp,'zhangminshu02','zhangminshu02')
+        rawDataSeti = df.fillna('nan')
 
-    # for c in condition:
-    #     # print c
-    #     sql_grp = 'select salary_bin3 ,' + c +' , count(1) as cnt_rec , count(distinct userid) as cnt_uniq_user from appzc.zms_customer_income_vars_Master_1 group by salary_bin3, '+ c
-    #     print sql_grp
-    #     df = run_sql(sql_grp)
-    #     rawDataSeti = df.fillna('nan')
+        ec = EntropyRefine(rawDataSeti, targetColumn = 'salary_bin3', conditionColumn=c ,cntColumn='cnt_uniq_user')
 
-    #     EntropyRefine(rawDataSeti, targetColumn = 'salary_bin3', conditionColumn=c ,cntColumn='cnt_uniq_user')
 
         # groupColumn = ['age_bin','cmstr_pho_pro']
         # groupColumnStr = ', '.join(groupColumn)
