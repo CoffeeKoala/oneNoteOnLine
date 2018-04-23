@@ -2,23 +2,24 @@ sefl todo list:
 
 
 
-1. Tool:
-☐ package flask + hightchart
-☐ extract data from xml
-
 
 2. sublime:
 ✔ markdown editing @done (18-03-13 15:50)
 ✔ real time preview @done (18-03-13 15:50)
 
-
-
-
 3. github:
 ✔ establish git page @done (18-03-13 18:50)
-☐ post a message to page
+✔ post a message to page @done (18-03-13 20:20)
 
 
 
+
+
+1. python:
+☐ package flask + hightchart
+
+☐ extract data from xml
+
+☐ log function
 
 
