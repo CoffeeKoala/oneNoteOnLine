@@ -123,7 +123,7 @@ if __name__ == '__main__':
 
 
     # intital
-    rawDataSet = loadData('C:\Users\zhangminshu02\Downloads\querryResult\query-impala-486745.csv')
+
     # condition = [u'phone_os_treat', u'ppd_tenure_m_bin', u'age_bin', u'cmstr_pho_pro', u'reg_resorce', u'cnt_rec', u'cnt_uniq_user'],
 
     condition = rawDataSet.columns.difference(['cnt_uniq_user','salary_bin3','cnt_rec'])
@@ -137,7 +137,7 @@ if __name__ == '__main__':
         # print c
         sql_grp = 'select salary_bin3 ,' + c +' , count(1) as cnt_rec , count(distinct userid) as cnt_uniq_user from appzc.zms_customer_income_vars_Master_1 group by salary_bin3, '+ c
         print sql_grp
-        df = run_sql(sql_grp,'zhangminshu02','zhangminshu02')
+
         rawDataSeti = df.fillna('nan')
 
         ec = EntropyRefine(rawDataSeti, targetColumn = 'salary_bin3', conditionColumn=c ,cntColumn='cnt_uniq_user')
