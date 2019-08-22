@@ -1,0 +1,833 @@
+#!/usr/bin/env python
+# -*-coding:utf-8-*-
+#============================================================#
+#WOE
+
+#ref_table by chimerge rules
+#apply ref_table
+
+#============================================================#
+#system arguments
+from optparse import OptionParser
+import contingency as cy
+from IPython.display import display_html
+from itertools import chain
+
+usage = '''
+NOTE:
+1. Get WOE reference table for infile.
+'''
+
+import os
+import sys
+import math
+import copy
+import operator
+import pandas as pd
+import scipy.stats
+import numpy as np
+from datetime import datetime
+import matplotlib.pyplot as plt
+plt.style.use('seaborn-white')
+import dumb_containers as dc
+
+import statsmodels.api as model
+
+def merge_samll_bins(key,mapping):
+    if mapping.has_key(key):
+        value = mapping[key]
+    else:
+        value = str(key)
+    return value
+
+
+# locate bins for numeric variables
+def str_convert(code):
+    if type(code) in [int, float,np.float64]:
+        result = str(int(code))
+    elif type(code) is str:
+        result = code
+    elif type(code) is str:
+        result = code.encode('utf8')
+    else:
+        result = code
+    return result
+
+def woe_calc(bad,good,goodfreq,badfreq):
+    target_rt = float(bad)/float(badfreq)
+    non_target_rt = float(good)/float(goodfreq)
+    if float(bad) != 0.0 and float(bad)/(float(bad) + float(good)) != 1.0:
+        woe = math.log(float(target_rt/non_target_rt))
+    elif target_rt == 0.0:
+        woe = -99999999.0
+    elif float(bad)/(float(bad) + float(good)) == 1.0:
+        woe = 99999999.0
+    return woe
+
+def iv_calc(df,var):
+    bad_dist = df[1]/df[1].sum()
+    good_dist = df[0]/df[0].sum()
+    bad_dist = bad_dist.apply(lambda x: 0.0001 if x == 0 else x)
+    iv_bin = df[var +'_iv_bin'] = (bad_dist - good_dist) * \
+                         (bad_dist / good_dist).apply(lambda x: math.log(x))
+    iv = iv_bin.sum()
+    return iv
+
+
+#  分类
+# main function: get the combined reference table for categorical variables
+def main_get_comb_cat_ref_table(df,var,tgt,var_char_loc='',drop_na=1,to_plot = True):
+
+    # print(df.head().T)
+    print "  shape of the master table: {}".format(df.shape)
+    print "\n  #--------------- 1. master load successfully --------------#"
+    if drop_na:
+        df = df[[var,tgt]].dropna(how='any').reset_index(drop=True).copy()
+    start_time = datetime.now()
+    # # group by var
+
+    # df['temp_cnt'] = 1
+    # ds = df.groupby([var,tgt]).count().unstack()['temp_cnt'].fillna(value=0).reset_index(drop = False)
+
+    ds = df.groupby([var,tgt]).size().unstack().fillna(value=0).reset_index(drop = False)
+
+    # # calclate the target rate or pop size
+
+    ds['pop'] = ds[1] + ds[0]
+    ds = ds.sort_values(['pop'],ascending=[1])
+    ds['bin'] = None
+
+    #------- merge the bins with samll size -------#
+
+    ubd = (ds['pop'].sum())/1200000.0
+
+    ds[var + '_comb'] = ds[var]
+    if ds['pop'].min() < ubd:
+        ds_idx_small_size = ds[ds['pop'] < ubd].index
+        ds_idx_small_size_list = [str(i) for i in ds_idx_small_size]
+        ds_idx_comb = "_".join(ds_idx_small_size_list)
+
+
+        ds['bin'][ds['pop'] < ubd] = ds_idx_comb
+        ds_idx_comb_dict = {}
+
+        for j in ds_idx_small_size:
+            ds_idx_comb_dict[j] = ds_idx_comb
+        df[var + '_comb'] = df[var].apply(lambda x: merge_samll_bins(x,ds_idx_comb_dict))
+
+        ds = df.groupby([var + '_comb',tgt]).count().unstack()[df.columns[0]].fillna(value=0)
+
+        ds['pop'] = ds[1] + ds[0]
+        ds = ds.sort(['pop'],ascending=[1])
+        ds = ds.reset_index(drop = False)
+
+    ds['target_rt'] = ds[1]/(ds[1] + ds[0])
+    ds = ds.sort_values(['target_rt'],ascending=[1])
+    chisq = []
+    for i in range(ds.shape[0]-1):
+        try:
+             chisq.append(cy.chi2_contingency(ds.iloc[i:i+2,][[1,2]])[0])
+        except:
+             chisq.append(cy.chi2_contingency(ds.iloc[i:i+2,][[0,1]])[0])
+    chisq.append(9999999.0)
+    ds['chisq'] = chisq
+
+    ds['bin'] = ds[var + '_comb'].apply(lambda x: str_convert(x))
+    end_time = datetime.now()
+    #ds_idx = ds.index
+    print(("  shape of the grouped table: {}".format(ds.shape)))
+    print(('  Duration of group process: {}'.format(end_time - start_time)))
+    #print("\n  #--------------- 2. initailize the contingency table successfully --------------#")
+    #------- chimerge: the adjacent bins -------#
+    ds.reset_index(drop=True,inplace=True)
+
+    start_time = datetime.now()
+    while ds.shape[0] > 6:
+        k = ds['chisq'].idxmin()
+        #print ds.ix[ds_idx_list[k:k+2]],ds.shape[0],k
+        # merge the adjacent bins, drop the second bin
+        ds.iloc[k,1:3] = ds.iloc[k,1:3] + ds.iloc[k+1,1:3]
+        ds['bin'].iat[k] = str(ds['bin'].iat[k]) + '_' + str(ds['bin'].iat[k+1])
+        ds.drop(k+1,inplace=True)
+        ds.reset_index(drop = True,inplace=True)
+        if k != 0:
+            ds['chisq'].iat[k-1] = cy.chi2_contingency(ds.iloc[k-1:k+1,1:3])[0]
+        if k < ds.shape[0] - 1:
+            ds['chisq'].iat[k] = cy.chi2_contingency(ds.iloc[k:k+2,1:3])[0]
+        else:
+            ds['chisq'].iat[k] = 9999999.0
+        #print("shape of the reduced table: ", ds.shape)
+        if ds.chisq.min() > scipy.stats.chi2.ppf(0.95, 1):
+            break
+        #print ds
+    end_time = datetime.now()
+
+
+    #print("\n  #--------------- 3. Merge bins by chisq rules Done --------------#")
+    print(('  Duration of merge bins by chisq rules: {}'.format(end_time - start_time)))
+    print(("  shape of the reduced table: {}".format(ds.shape)))
+
+    #------- chimerge: control bin size -------#
+    pop_cut = float(ds[0].sum() + ds[1].sum())/20
+
+    ds['pop'] = ds[0] + ds[1]
+
+
+    ds_part = ds.loc[ds[var] != '-1', :].copy()
+    ds_null = ds.loc[ds[var] == '-1', :].copy()
+
+
+    # while ds.loc[ds['bin'] != '-1', 'pop'].min() < pop_cut:
+
+    #     # ds_idx_list = list(ds.index)
+    #     k = ds['pop'].idxmin()
+    #     # k = ds_idx_list.index(ds[ds['pop'] == ds['pop'].min()].index[0])
+    #     if k == ds.shape[0] - 1 :
+    #         k -= 1
+    #     # elif ds['chisq'].ix[ds_idx_list[k]] > ds['chisq'].ix[ds_idx_list[k-1]]:
+    #     elif ds['chisq'].iat[k] > ds['chisq'].iat[k-1]:
+    #         k -= 1
+    #     ds.iloc[k,1:3] = ds.iloc[k,1:3] + ds.iloc[k+1,1:3]
+    #     # ds.ix[ds_idx_list[k],1:3] = ds.ix[ds_idx_list[k],1:3] + ds.ix[ds_idx_list[k+1],1:3]
+    #     ds['bin'].iat[k] = str(ds['bin'].iloc[k]) + '_' + str(ds['bin'].iloc[k+1])
+    #     ds.drop(k+1,inplace=True)
+    #     ds.reset_index(drop = True,inplace=True)
+
+    #     ds['pop'] = ds[0] + ds[1]
+    while ds_part['pop'].min() < pop_cut:
+
+        ds_idx_list = list(ds_part.index)
+        k = ds_idx_list.index(ds_part[ds_part['pop'] == ds_part['pop'].min()].index[0])
+        if k == len(ds_idx_list) - 1 :
+            k -= 1
+        elif ds_part['chisq'].ix[ds_idx_list[k]] > ds_part['chisq'].ix[ds_idx_list[k-1]]:
+            k -= 1
+
+        ds_part.ix[ds_idx_list[k],1:3] = ds_part.ix[ds_idx_list[k],1:3] + ds_part.ix[ds_idx_list[k+1],1:3]
+        ds_part['bin'].ix[ds_idx_list[k]] = str(ds_part['bin'].ix[ds_idx_list[k]]) + '_' + str(ds_part['bin'].ix[ds_idx_list[k+1]])
+        ds_part = ds_part.drop(ds_idx_list[k+1])
+        ds_part = ds_part.reset_index(drop = True)
+
+        ds_part['pop'] = ds_part[0] + ds_part[1]
+    ds = pd.concat([ds_null, ds_part]).reset_index()
+    ds = ds.drop(['index'],axis=1)
+    #print("\n  #--------------- 4. Done: merge bins by bin size --------------#")
+    print(("  shape of the reduced table: {}".format(ds.shape)))
+
+    #------- get the reference table -------#
+    ds['ref_table'] = None
+    goodfreq = ds[0].sum()
+    badfreq = ds[1].sum()
+    ds[var +'_woe'] = ds.apply(lambda x: woe_calc(x[1],x[0],goodfreq,badfreq), axis = 1)
+    iv = iv_calc(ds, var + '_woe')
+    print(('  IV: {}'.format(iv)))
+    ds['Target_Rate'] = ds[1] / (ds[0] + ds[1])
+    ds['Cnt'] = ds[0] + ds[1]
+    if to_plot:
+        plt.bar(list(range(len(ds[1].values))), ds[1].values + ds[0].values,color='#86A4DA')
+        plt.bar(list(range(len(ds[1].values))), ds[1].values,color='#EAAA79')
+        ax2 = plt.twinx()
+        x = ds.index + 0.5
+        y = ds[var +'_woe'].values
+        plt.plot(np.arange(len(x))+0.5, y, '.-k', linewidth=2, markersize=10, color='#7AB7B5')
+        plt.plot(np.arange(len(x)) + 0.5, ds['Target_Rate'].values, '.-k', linewidth=2, markersize=10, color='#8C8C8C')
+        my_xticks = ds['bin'].values
+        plt.xticks(x, my_xticks)
+        for i,j in zip(np.arange(len(x))+0.5,y):
+            ax2.annotate(str(round(j,2)),xy=(i,j),va="center", ha="left",
+                      bbox=dict(boxstyle="round", fc="w"))
+        for i,j in zip(np.arange(len(x))+0.5,ds['Target_Rate'].values):
+            ax2.annotate(str(round(j,4)),xy=(i,j),va="center", ha="left",
+                      bbox=dict(boxstyle="round", fc="w"))
+        plt.title('Train-Sp-{}  IV:{}'.format(var, round(iv, 6)))
+        plt.savefig(var_char_loc + var + '.jpeg')
+        plt.close()
+
+    ds_idx = ds.index
+    ref_table = {}
+    for i in range(ds.shape[0]):
+        bin_list = ds['bin'].iat[ds_idx[i]].split('_')
+        ds['ref_table'].iat[ds_idx[i]] = [j + ' : ' + str(ds[var+'_woe'].iat[ds_idx[i]]) for j in bin_list]
+        for j in bin_list:
+            ref_table[str(j)] = str(ds[var+'_woe'].iat[ds_idx[i]])
+    ref_table['base'] = 0
+    cwoe_ref_table = ds[['bin', var +'_woe', 'Target_Rate', 'Cnt']].rename(columns={'bin': 'Var_Value',
+                                                                               var + '_woe': 'Ref_Value'
+                                                                                      }).copy()
+    total = pd.DataFrame({'Var_Value': ['base'],
+                          'Ref_Value': [0.0],
+                          'Target_Rate': [ds[1].sum()/ (ds[0] + ds[1]).sum()],
+                          'Cnt': [ds['Cnt'].sum()]
+                          })
+
+    cwoe_ref_table = pd.concat([cwoe_ref_table, total[['Var_Value','Ref_Value','Target_Rate','Cnt']]])
+    print("\n  #--------------- get the reference table --------------#")
+
+    return ref_table,iv, cwoe_ref_table.reset_index(drop=True)
+
+
+
+def calcu_categ_woe_iv(df_var,var_list,tgt,var_char_loc='',drop_na=0,to_plot=1):
+
+    '''
+    df_var：特征变量数据，含target列；
+    var_list：需要计算woe的字段名字，是一个list；
+    tgt： target字段的名字；
+    var_char_loc： 保存图片的地址；默认为空，即当前目录里面
+    dfins: 测试集样本，如果传的话，将会把测试集在相同bin的情况下woe值和target rate 的图画出来；默认为空
+    drop_na：  是否剔除空值；默认是剔除
+    to_plot： 是否画图，默认是作图；0:否，1：是
+    '''
+    df_category_ref_table = pd.DataFrame()
+    df_cwoe_ref_table = pd.DataFrame()
+    for var in var_list:
+        print('\n#============ Start to process on the {} ============#'.format(var))
+        ref_table,iv, cwoe_ref_table = main_get_comb_cat_ref_table(df_var,var,tgt,var_char_loc,drop_na,to_plot)
+        df_ref_table_tmp = pd.DataFrame(list(ref_table.items()), columns=['Var_Value', 'Ref_Value'])
+        df_ref_table_tmp['Var_Name'] = var
+        df_ref_table_tmp['IV'] = iv
+        cwoe_ref_table['Var_Name'] = var
+        cwoe_ref_table['IV'] = iv
+        # 显示
+        display_html(cwoe_ref_table)
+
+        df_category_ref_table = pd.concat((df_category_ref_table,df_ref_table_tmp),axis = 0)
+        df_cwoe_ref_table = pd.concat((df_cwoe_ref_table,cwoe_ref_table),axis = 0)
+
+    return df_cwoe_ref_table.sort_values('IV',ascending=False)
+
+
+def calcu_num_woe_iv(df_var,var_list,tgt,var_char_loc=' ',dfins=None,drop_na=1,to_plot=0):
+    '''
+    df_var：特征变量数据，含target列；
+    var_list：需要计算woe的字段名字，是一个list；
+    tgt： target字段的名字；
+    var_char_loc： 保存图片的地址；默认为空，即当前目录里面
+    dfins: 测试集样本，如果传的话，将会把测试集在相同bin的情况下woe值和target rate 的图画出来；默认为空
+    drop_na：  是否剔除空值；默认是剔除
+    to_plot： 是否画图，默认是不作图；0:否，1：是
+    '''
+    df_numeric_ref_table = pd.DataFrame()
+    #df_numeric_ref_table = pd.read_csv('./nwoe_table.csv')
+    for var in var_list:
+        print('\n#============ Start to process on the {} ============#'.format(var))
+        df_ref_table_tmp,iv = main_get_numeric_ref_table(df_var,var,tgt,1000,var_char_loc,dfins,drop_na,to_plot)
+        # df_ref_table_tmp = pd.DataFrame(list(ref_table.items()), columns=['Var_Value', 'Ref_Value'])
+        df_ref_table_tmp['Var_Name'] = var
+        df_ref_table_tmp['IV'] = iv
+        df_numeric_ref_table = pd.concat((df_numeric_ref_table,df_ref_table_tmp),axis = 0)
+        display_html(df_ref_table_tmp)
+    return df_numeric_ref_table.sort_values('IV',ascending=False)
+
+# main function: get the reference table for numeric variables
+def main_get_numeric_ref_table(df,var,tgt,max_bins,var_char_loc,dfins=None,drop_na=False,to_plot = True):
+    start_time = datetime.now()
+    # start_time_tes = datetime.now()
+    # print('=====a=====',datetime.now() - start_time_tes)
+    '''
+    ------- 1. Initialize: create the numeric bins -------#
+    '''
+    #df[var] = df[var].round(8)
+    if drop_na:
+        df = df[[var,tgt]].dropna(how='any').reset_index(drop=True).copy()
+    # create bucket
+    # list -1 independently
+    uin_value = df[var].unique()
+    if len(uin_value) < max_bins:
+        uvalue = np.sort(uin_value)
+        uvdiff = np.append(np.diff(np.sort(uin_value))/2,0)
+        uvbucket = np.unique(np.append(uvalue.min(),uvalue + uvdiff))
+        uvbucket = np.sort( np.append(uvbucket,[-1 + 0.0000001]))
+        #uvbucket = uvalue
+
+        print('  unique value less than 1000')
+
+    else:
+        uvalue = np.empty(0)
+        for i in np.arange(max_bins+1):
+            try:
+                #uvalue = np.unique((np.append(uvalue,round(df[var].quantile(float(i)/float(max_bins)),8))))
+                uvalue = np.unique((np.append(uvalue,df[var].quantile(float(i)/float(max_bins)))))
+            except:
+                pass
+        uvdiff = np.append(np.diff(uvalue)/2,0)
+        uvbucket = np.append(uvalue.min(),uvalue + uvdiff)
+        uvbucket = np.unique(uvbucket)
+        uvbucket = np.sort( np.append(uvbucket,[-1 + 0.0001]))
+
+        #uvbucket = uvalue
+        print('  unique value greater than 1000')
+
+    df[var+'_bin'] = [tuple([float(j) for j in str(i).strip('([]').split(',')]) for i in np.array(pd.cut(df[var],uvbucket,retbins=True,include_lowest = True)[0])]
+    ds = df.groupby([var+'_bin',tgt]).count().unstack()[var].fillna(value=0)
+
+    # print('=====d=====', datetime.now() - start_time_tes)
+
+    ds['bin'] = [[str(i[0]),str(i[1])] for i in list(ds.index)]
+    ds['bin_lb'] = [str(i[0]) for i in list(ds.index)]
+
+    ds = ds.reset_index(drop = True)
+    chisq = []
+    # print('=====d=====', datetime.now() - start_time_tes)
+    for i in range(ds.shape[0]-1):
+        chisq.append(round(cy.chi2_contingency(ds.iloc[i:i+2,][[0,1]])[0],11))
+    chisq.append(9999999.0)
+    ds['chisq'] = chisq
+
+
+
+
+    # print('=====d=====', datetime.now() - start_time_tes)
+    '''
+    #------- 2. chimerge: merge the adjacent bins -------#
+    '''
+    start_time = datetime.now()
+
+    ds_part = ds.loc[ds['bin_lb'].astype('float') != -1.0, :].copy().reset_index()
+    ds_null = ds.loc[ds['bin_lb'].astype('float') == -1.0, :].copy().reset_index()
+
+    ds_part = ds_part.drop(['index'],axis=1)
+    ds_null = ds_null.drop(['index'],axis=1)
+
+
+    # display_html(ds_null)
+    # display_html(ds_part)
+
+
+    while ds_part.shape[0] > 6 or ds_part.chisq.min() <= scipy.stats.chi2.ppf(0.95, 1):
+        start_time = datetime.now()
+
+        k = ds_part['chisq'].idxmin()
+        # print '=====%s====='%(ds_part.shape[0]), "========",k,"===========",ds['chisq'].min()
+        ds_part.iloc[k,0:2] = ds_part.iloc[k,0:2] + ds_part.iloc[k+1,0:2]
+        ds_part['bin'].iat[k] = [ds_part['bin'].iat[k][0],ds_part['bin'].iat[k+1][1]]
+        ds_part.drop(k+1,inplace=True)
+        ds_part.reset_index(drop = True,inplace=True)
+        if k != 0:
+            ds_part['chisq'].iat[k-1] = cy.chi2_contingency(ds_part.iloc[k-1:k+1,0:2])[0]
+        if k < ds_part.shape[0] - 1:
+            ds_part['chisq'].iat[k] = cy.chi2_contingency(ds_part.iloc[k:k+2,0:2])[0]
+        else:
+            ds_part['chisq'].iat[k] = 9999999.0
+        end_time = datetime.now()
+
+
+
+
+
+    end_time = datetime.now()
+    # print('=====e=====', datetime.now() - start_time_tes)
+
+    #print("\n  #--------------- 2. Merge bins by chisq rules Done --------------#")
+    print(('  Duration of merge bins by chisq rules: {}'.format(end_time - start_time)))
+    print(("  shape of the reduced table: {}".format(ds.shape)))
+
+
+    '''
+    #-------- 3. chimerge: control bin size -------#
+    '''
+
+
+
+
+    pop_cut = (ds_part[0].sum() + ds_part[1].sum())/20
+
+
+
+    ds_part['pop'] = ds_part[0] + ds_part[1]
+    ds_null['pop'] = ds_null[0] + ds_null[1]
+
+    # print('=====f=====', datetime.now() - start_time_tes)
+    # display_html(ds_part)
+    print pop_cut
+
+    while ds_part['pop'].min() < pop_cut:
+        # print('==========ds================')
+        # calculate chisquare statistic
+        chisq = []
+        for i in range(ds_part.shape[0]-1):
+            chisq.append(cy.chi2_contingency(ds_part.iloc[i:i+2,][[0,1]])[0])
+        chisq.append(9999999.0)
+        ds_part['chisq'] = chisq
+
+        # locate the smallest size by index
+
+        k = ds_part['pop'].idxmin()
+
+        if k == ds_part.shape[0] - 1 :
+            k -= 1
+        elif ds_part['chisq'].iat[k] > ds_part['chisq'].iat[k-1]:
+            k -= 1
+
+
+        ds_part.iloc[k,0:2] = ds_part.iloc[k,0:2] + ds_part.iloc[k+1,0:2]
+        ds_part['bin'].iat[k] = [ds_part['bin'].iat[k][0],ds_part['bin'].iat[k+1][1]]
+        ds_part['bin_lb'].iat[k] = ds_part['bin'].iat[k][0]
+        ds_part.drop(k+1,inplace=True)
+        ds_part['pop'] = ds_part[0] + ds_part[1]
+        ds_part.reset_index(drop=True,inplace=True)
+
+    ds = pd.concat([ds_null,ds_part]).reset_index()
+    ds = ds.drop(['index'],axis=1)
+
+    # display_html(ds_part)
+
+    #print("\n  #--------------- 3. Done: merge bins by bin size --------------#")
+    print(("  shape of the final reduced table: {}".format(ds.shape)))
+    # print('=====g=====', datetime.now() - start_time_tes)
+
+
+    '''
+    #------- get the reference table -------#
+    '''
+    # ds = ds.reset_index(drop=True)
+    # ds.reset_index(drop=True,inplace=True)
+    ds['ref_table'] = None
+    goodfreq = ds[0].sum()
+    badfreq = ds[1].sum()
+    ds[var +'_woe'] = ds.apply(lambda x: woe_calc(x[1],x[0],goodfreq,badfreq), axis = 1)
+    ds['ref_table'] = ds['bin'].apply(lambda x: x[0] + '_' + x[1])
+    iv = iv_calc(ds,var +'_woe')
+    # print('=====h=====', datetime.now() - start_time_tes)
+    #print ds
+    ds['Target_Rate'] = ds[1] / (ds[0] + ds[1])
+    ds['Cnt'] = ds[0] + ds[1]
+
+    if dfins is not None:
+        # print(dfins[var].min(),dfins[var].max())
+        bins = sorted(list(set([float(x) for x in list(chain.from_iterable(ds['bin'].tolist()))])))
+        if bins[-1] < dfins[var].max():
+            bins.pop()
+            bins.append(dfins[var].max())
+
+        if bins[0] > dfins[var].min():
+            bins.pop(0)
+            bins = [dfins[var].min()] + bins
+        dfins[var + '_bin'] = [tuple([float(j) for j in str(i).strip('([]').split(',')]) for i in
+                            np.array(pd.cut(dfins[var], bins, retbins=True, include_lowest=True)[0])]
+        dss = dfins.groupby([var + '_bin', tgt]).count().unstack()[var].fillna(value=0)
+        # display_html(dss)
+        dss['bin'] = [[str(i[0]), str(i[1])] for i in list(dss.index)]
+        dss['bin_lb'] = [str(i[0]) for i in list(dss.index)]
+        dss = dss.reset_index(drop=True)
+        tgoodfreq = dss[0].sum()
+        tbadfreq = dss[1].sum()
+        dss[var + '_woe'] = dss.apply(lambda x: woe_calc(x[1], x[0], tgoodfreq, tbadfreq), axis=1)
+        iv_test = iv_calc(dss, var + '_woe')
+        dss['Target_Rate'] = dss[1] / (dss[0] + dss[1])
+        # display_html(dss)
+    # print('=====i=====', datetime.now() - start_time_tes)
+
+    if to_plot:
+        barylim = ds[1].values.sum() + ds[0].values.sum() + (ds[1].values.sum() + ds[0].values.sum())/7
+        minval_woe = ds[var +'_woe'].values.min()
+        maxval_woe = ds[var +'_woe'].values.max()
+        minval_trt = ds['Target_Rate'].values.min()
+        maxval_trt = ds['Target_Rate'].values.max()
+        if dfins is not None:
+            minval_woe = min([minval_woe, dss[var +'_woe'].values.min()])
+            maxval_woe = min([maxval_woe, dss[var +'_woe'].values.max()])
+            minval_trt = min([minval_trt, dss['Target_Rate'].values.max()])
+            maxval_trt = min([maxval_trt, dss['Target_Rate'].values.max()])
+        minval = min([minval_woe, minval_trt])
+        maxval = max([maxval_woe, maxval_trt])
+        if minval < 0:
+            lineylim_min = minval + minval / 2
+        else:
+            lineylim_min = minval - minval / 2
+        if maxval > 0:
+            lineylim_max = maxval + maxval / 2
+        else:
+            lineylim_max = maxval - maxval / 2
+
+        if dfins is not None:
+            # 测试集的图
+            plt.figure(figsize=(18,7))
+            plt.subplot(122)
+            plt.bar(list(range(len(ds[1].values))), dss[1].values + dss[0].values,color='#86A4DA')
+            plt.bar(list(range(len(ds[1].values))), dss[1].values, color='#EAAA79')
+            plt.ylim((0, barylim))
+            ax2 = plt.twinx()
+            x = ds.index + 0.5
+            y = dss[var +'_woe'].values
+            # y = dss['Target_Rate'].values
+            plt.plot(np.arange(len(x)) + 0.5, y, '.-k', linewidth=2, markersize=10, color='#7AB7B5')
+            plt.plot(np.arange(len(x)) + 0.5, dss['Target_Rate'].values, '.-k', linewidth=2, markersize=10,color='#8C8C8C')
+
+            plt.ylim((lineylim_min, lineylim_max))
+            my_xticks = ds['bin'].values
+            plt.xticks(x, my_xticks)
+
+            for i, j in zip(np.arange(len(x)) + 0.5, y):
+                ax2.annotate(str(round(j, 4)), xy=(i, j), va="center", ha="left",
+                             bbox=dict(boxstyle="round", fc="w"))
+            for i, j in zip(np.arange(len(x)) + 0.5, dss['Target_Rate'].values):
+                ax2.annotate(str(round(j, 4)), xy=(i, j), va="center", ha="left",
+                             bbox=dict(boxstyle="round", fc="w"))
+            # plt.show()
+            plt.title('Test-Sp-{}  IV:{}'.format(var, round(iv_test, 6)))
+            plt.subplot(121)
+        # 训练集
+        plt.bar(list(range(len(ds[1].values))), ds[1].values + ds[0].values,color='#86A4DA')
+        plt.bar(list(range(len(ds[1].values))), ds[1].values, color='#EAAA79')
+        plt.ylim((0, barylim))
+
+        ax2 = plt.twinx()
+        x = ds.index + 0.5
+        y = ds[var +'_woe'].values
+        # y = ds['Target_Rate'].values
+        plt.plot(np.arange(len(x))+0.5, y, '.-k', linewidth=2, markersize=10, color='#7AB7B5')
+        plt.plot(np.arange(len(x))+0.5, ds['Target_Rate'].values, '.-k', linewidth=2, markersize=10, color='#8C8C8C')
+        plt.ylim((lineylim_min, lineylim_max))
+        my_xticks = ds['bin'].values
+        plt.xticks(x, my_xticks)
+
+        for i,j in zip(np.arange(len(x))+0.5,y):
+            ax2.annotate(str(round(j,4)),xy=(i,j),va="center", ha="left",
+                      bbox=dict(boxstyle="round", fc="w"))
+
+        for i,j in zip(np.arange(len(x))+0.5,ds['Target_Rate'].values):
+            ax2.annotate(str(round(j,4)),xy=(i,j),va="center", ha="left",
+                      bbox=dict(boxstyle="round", fc="w"))
+        #plt.show()
+        plt.title('Train-Sp-{}  IV:{}'.format(var,round(iv,6)))
+        plt.savefig(var_char_loc + var+'.jpeg')
+        plt.close()
+    # print('=====k=====', datetime.now() - start_time_tes)
+    ref_table = ds[['ref_table', var +'_woe', 'Target_Rate', 'Cnt']].rename(columns={'ref_table': 'Var_Value',
+                                                                               var + '_woe': 'Ref_Value'
+                                                                                      }).copy()
+    total = pd.DataFrame({'Var_Value': ['base'],
+                          'Ref_Value': [0.0],
+                          'Target_Rate': [ds[1].sum()/ (ds[0] + ds[1]).sum()],
+                          'Cnt': [ds['Cnt'].sum()]
+                          })
+
+    ref_table = pd.concat([ref_table, total[['Var_Value','Ref_Value','Target_Rate','Cnt']]])
+    print(('  IV: {}'.format(iv)))
+    #
+    # ref_table = {}
+    # ref_table = dict(list(zip(ds['ref_table'],ds[var +'_woe'])))
+    # ref_table['base'] = woe_calc_base(ds[1].sum(),ds[0].sum())
+    end_time = datetime.now()
+
+    #print("\n  #--------------- get the reference table --------------#")
+    #print('  Duration of getting the reference table: {}'.format(end_time - start_time))
+
+    # print('=====l=====', datetime.now() - start_time_tes)
+    return ref_table,iv
+
+
+#cvlookup function
+def cvlookup(table,key):
+    if key in table:
+        if table[key] == '-99999999.0' :
+            value = table['base']
+        else:
+            value = table[key]
+    else:
+        value = 0
+    return float(value)
+
+
+
+#nvlookup function
+def nvlookup(table,value):
+
+   keylist = table.keys()
+   keylist.sort()
+
+   kmaxrange = keylist[-2]
+   kminrange = keylist[0]
+   kmax = keylist[-2].split('_')
+   kmin = keylist[0].split('_')
+
+   value = round(value,8)
+
+   for key in table.keys():
+
+       if key != 'base':
+           krange = key.split('_')
+
+           if value >=  float(krange[0]) and value < float(krange[1]):
+
+               if table[key] == '-99999999.0':
+                   ref = 0
+               else:
+                   ref = table[key]
+               break
+           elif value >= float(kmax[1]):
+               ref = table[kmaxrange]
+           elif value < float(kmin[1]):
+               ref = table[kminrange]
+
+   return ref
+
+
+
+# main function: apply the numeric reference table
+def main_apply_numeric_ref_table(datain,ref_table,var):
+
+    datain['cwoe_' + var] = datain[var].apply(lambda x: nvlookup(ref_table,x))
+
+    return datain
+
+
+
+# main function: apply the categorical reference table
+def main_apply_cat_ref_table(datain,ref_table,var):
+
+    datain['cwoe_' + var] = datain[var].apply(lambda x: cvlookup(ref_table,str(x)))
+
+    return datain
+
+
+
+#变量WOE赋值
+def woe_apply(df,ref_nwoe,ref_cwoe):
+
+    if ref_nwoe.shape[0]>0:
+        for var in ref_nwoe['Var_Name'].unique():
+            if var in df.columns.tolist():
+                df[var] = df[var].fillna(-1)
+                df_ref_table_var = ref_nwoe[ref_nwoe['Var_Name'] == var]
+                ref_table = dict(zip(df_ref_table_var['Var_Value'],df_ref_table_var['Ref_Value']))
+                df = main_apply_numeric_ref_table(df,ref_table,var)
+
+    if ref_cwoe.shape[0]>0:
+        for var in ref_cwoe['Var_Name'].unique():
+            if var in df.columns.tolist():
+                df[var] = df[var].fillna('-1')
+                df[var] = df[var].apply(lambda x: str_convert(x))
+                df_ref_table_var = ref_cwoe[ref_cwoe['Var_Name'] == var]
+                ref_table = dict(zip(df_ref_table_var['Var_Value'],df_ref_table_var['Ref_Value']))
+
+                df = main_apply_cat_ref_table(df,ref_table,var)
+
+    return df
+
+
+#变量WOE赋值
+def woe_apply_m(df,ref_nwoe,ref_cwoe):
+    '''
+    numerical var 计算保持不变
+    cat var 寻找分组时，需要切分一下
+    '''
+    if ref_nwoe.shape[0]>0:
+        for var in ref_nwoe['Var_Name'].unique():
+            # print var
+            if var in df.columns.tolist():
+                df[var] = df[var].fillna(-1)
+                df_ref_table_var = ref_nwoe[ref_nwoe['Var_Name'] == var]
+                ref_table = dict(zip(df_ref_table_var['Var_Value'],df_ref_table_var['Ref_Value']))
+                df = main_apply_numeric_ref_table(df,ref_table,var)
+
+    if ref_cwoe.shape[0]>0:
+        for var in ref_cwoe['Var_Name'].unique():
+            # print var
+
+            if var in df.columns.tolist():
+                df[var] = df[var].fillna('-1')
+                df[var] = df[var].apply(lambda x: str_convert(x))
+                df_ref_table_var = ref_cwoe[ref_cwoe['Var_Name'] == var]
+                ref_table = dict(zip(df_ref_table_var['Var_Value'],df_ref_table_var['Ref_Value']))
+
+
+                df_ref_table_var_dash = df_ref_table_var.loc[df_ref_table_var['Var_Value'].str.find('_')!=-1, ['Var_Value','Ref_Value'] ]
+
+                split_cat_var = []
+                split_vat_woe = []
+
+                for index,row in df_ref_table_var_dash.iterrows():
+                    split_cat_var = split_cat_var +  row['Var_Value'].split('_')
+                    split_vat_woe = split_vat_woe + [row['Ref_Value']]*len(row['Var_Value'].split('_'))
+
+
+                for x in xrange(len(split_cat_var)):
+                    ref_table[split_cat_var[x] ]= split_vat_woe[x]
+
+                df = main_apply_cat_ref_table(df,ref_table,var)
+
+    return df
+
+
+
+def train_lr(df, input_vars, target, score_name = "score_lr", show_performance = True):
+# 训练LR模型
+
+    x = df[input_vars]
+    x.loc[:,'const'] = 1
+    y = df[target]
+    print "call function"
+    model_lr = model.Logit(y, x).fit_regularized()
+
+    df[score_name] = model_lr.predict(x)
+    print "call function end"
+
+    if show_performance:
+        print '\n============ Model - Logistic Regresion ============\n'
+        print '{0}\n'.format(model_lr.summary())
+        dc.evaluate_performance(y.values, df[score_name].values)
+
+    return df, model_lr.params
+    # return 0,0
+def score_lr(df, ref_model, target, score_name = "score_lr", show_performance = True):
+# 调用训练好的模型
+
+    df['score_tmp'] = 0
+    df['score_tmp_wo_const'] = 0
+    for var in ref_model.index[:-1]:
+        # print var, df[var].dtype , ref_model[var],type( ref_model[var]),  df[var].count()
+        df['score_tmp']          +=  df[var].astype(float) * ref_model[var]
+        df['score_tmp_wo_const'] += df[var].astype(float) * ref_model[var]
+
+    df['score_tmp'] += ref_model['const']
+    df[score_name] = np.exp(df['score_tmp'].astype(float)) / (1.0 + np.exp(df['score_tmp'].astype(float)))
+
+    if show_performance:
+        dc.evaluate_performance(df[target].values, df[score_name].values)
+
+    return df
+
+# def score_lr(df, ref_model, target, score_name = "score_lr", show_performance = False):
+#     # input type of ref_model : data frame!!!
+#     # 调用训练好的模型
+
+#     df['score_tmp'] = 0
+#     df['score_tmp_wo_const'] = 0
+
+#     for var in ref_model.index[:-1]:
+#         print var
+#         df.loc[:,'score_tmp']          += df[var] * ref_model.ix[var,0]
+#         df.loc[:,'score_tmp_wo_const'] += df[var] * ref_model.ix[var,0]
+
+#     df.loc[:,'score_tmp'] += ref_model.ix['const',0]
+#     df.loc[:,score_name] = np.exp(df['score_tmp'].astype(float)) / (1.0 + np.exp(df['score_tmp'].astype(float)))
+
+#     if show_performance:
+
+#         dc.evaluate_performance_v2(df[target].values, df[score_name].values)
+
+#     return df;
+
+
+def Binarize(df,var_list, features=None):
+# 将特定字段转为哑变量
+    #'''
+    #参数 ：df：df_master；var_list ：要转为哑变量的字段名列表；features：指定的值
+    #作用 ：将categorycal按onehot 转为哑变量
+    #例如 ：Binarize(df_test.copy(),['id_province'])
+    #返回 ：加上哑变量的df　
+    #'''
+    add_vars = []
+    for columnName in var_list:
+        df[columnName] = df[columnName].astype(str)
+        if(features is None):
+            features = df[columnName].unique()
+        for x in features:
+            add_vars.append(columnName+'_' + x)
+            df[columnName+'_' + x] = df[columnName].map(lambda y: 1 if y == x else 0)
+        features = None
+    print (add_vars)
+#         df.drop(columnName, inplace=True, axis=1)
+    return df,add_vars
